@@ -5,7 +5,11 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
+use rand::{thread_rng, Rng};
 mod input;
+
+// Sprite Sheet Resolution
+const SPRITE_SHEET_RESOLUTION: (f32, f32) = (4.0, 4.0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -19,6 +23,87 @@ struct GPUCamera {
 struct GPUSprite {
     screen_region: [f32; 4],
     sheet_region: [f32; 4],
+}
+
+struct Projectile {
+    pos: (f32, f32),
+    size: (f32, f32),
+    speed: f32,
+    spawn_pos: (f32, f32),
+    sprite_index: usize,
+}
+
+impl Projectile {
+    // Called each frame to move the projectile
+    fn move_proj(&mut self, sprites: &mut Vec<GPUSprite>) {
+        // Move down by <speed> amount
+        self.pos = (self.pos.0, self.pos.1 - self.speed);
+
+        if self.pos.1 < 0.0 {
+            self.respawn();
+        }
+
+        // Update sprite location.
+        sprites[self.sprite_index].screen_region = 
+        [
+            self.pos.0,
+            self.pos.1,
+            self.size.0,
+            self.size.1
+        ];
+    }
+
+    fn check_collision (&mut self, player: &mut Player) {
+        // Check for collision
+        if self.pos.1 <= player.pos.1 + player.size.1 &&
+           self.pos.1 + self.size.1 >= player.pos.1 &&
+           self.pos.0 <= player.pos.0 + player.size.0 &&
+           self.pos.0 + self.size.0 >= player.pos.0 
+        {
+            // If colliding, reset spawn and print
+            self.respawn();
+        }
+    }
+
+    fn respawn(&mut self) {
+        self.pos = (self.spawn_pos.0 + thread_rng().gen_range(-200..=200) as f32, self.spawn_pos.1);
+    }
+}
+
+struct Player {
+    pos: (f32, f32),
+    size: (f32, f32),
+    speed: f32,
+    sprite_index: usize,
+    facing_right: bool,
+}
+
+impl Player {
+    fn player_loop(&mut self, sprites: &mut Vec<GPUSprite>) {
+        sprites[self.sprite_index].screen_region = 
+        [
+            self.pos.0,
+            self.pos.1,
+            self.size.0,
+            self.size.1
+        ];
+
+        if self.facing_right {
+            self.set_sprite(sprites, (0.0, 0.0))
+        }
+        else {
+            self.set_sprite(sprites, (2.0, 0.0))
+        }
+    }
+
+    fn set_sprite(&mut self, sprites: &mut Vec<GPUSprite>, index: (f32, f32)) {
+        sprites[self.sprite_index].sheet_region = [
+            index.0 / SPRITE_SHEET_RESOLUTION.0, 
+            index.1 / SPRITE_SHEET_RESOLUTION.1, 
+            1.0 / SPRITE_SHEET_RESOLUTION.0, 
+            1.0 / SPRITE_SHEET_RESOLUTION.1
+        ];
+    }
 }
 
 #[cfg(not(feature = "webgl"))]
@@ -250,20 +335,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let mut sprites: Vec<GPUSprite> = vec![
         GPUSprite {
             screen_region: [2.0, 32.0, 64.0, 64.0],
-            sheet_region: [0.0, 16.0 / 32.0, 0.25, 0.25],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
         GPUSprite {
             screen_region: [32.0, 128.0, 64.0, 64.0],
-            sheet_region: [16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
-        GPUSprite {
-            screen_region: [128.0, 32.0, 64.0, 64.0],
-            sheet_region: [0.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
-        },
-        GPUSprite {
-            screen_region: [128.0, 128.0, 64.0, 64.0],
-            sheet_region: [16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
-        },
+        // GPUSprite {
+        //     screen_region: [-128.0, 32.0, 64.0, 64.0],
+        //     sheet_region: [0.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
+        // },
+        // GPUSprite {
+        //     screen_region: [-128.0, 128.0, 64.0, 64.0],
+        //     sheet_region: [16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
+        // },
     ];
     let buffer_sprite = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -305,8 +390,28 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let mut input = input::Input::default();
     // Input bools
     let mut move_right = false;
+    let mut move_left = false;
+    // Define our projectile
+    let mut projectile = Projectile{
+        pos: (400.0, 500.0),
+        size: (64.0, 64.0),
+        speed: 10.0,
+        spawn_pos: (400.0, 800.0),
+        sprite_index: 1,
+    };
+
+    // And our player
+    let mut player = Player {
+        pos: (400.0, 100.0),
+        size: (64.0, 64.0),
+        speed: 6.0,
+        sprite_index: 0,
+        facing_right: true,
+    };
+
+
     event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        //*control_flow = ControlFlow::Wait;
         match event {
             Event::WindowEvent {
                 event: WindowEvent::Resized(size),
@@ -323,31 +428,33 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // TODO: move sprites, maybe scroll camera
                 if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
                     move_right = true;
-                    println!("Down");
+                }
+                if input.is_key_down(winit::event::VirtualKeyCode::Left) {
+                    move_left = true;
                 }
                 if input.is_key_released(winit::event::VirtualKeyCode::Right) {
                     move_right = false;
-                    println!("Up");
                 }
-                else if input.is_key_down(winit::event::VirtualKeyCode::Left) {
-                    sprites[0].screen_region = 
-                    [
-                        sprites[0].screen_region[0] - 8.0,
-                        sprites[0].screen_region[1],
-                        sprites[0].screen_region[2],
-                        sprites[0].screen_region[3]
-                    ]
+                if input.is_key_released(winit::event::VirtualKeyCode::Left) {
+                    move_left = false;
                 }
-                println!("FIRE");
+
                 if move_right {
-                    sprites[0].screen_region = 
-                    [
-                        sprites[0].screen_region[0] + 8.0,
-                        sprites[0].screen_region[1],
-                        sprites[0].screen_region[2],
-                        sprites[0].screen_region[3]
-                    ]
+                    player.pos = (player.pos.0 + player.speed, player.pos.1);
+                    player.facing_right = true;
                 }
+                if move_left {
+                    player.pos = (player.pos.0 - player.speed, player.pos.1);
+                    player.facing_right = false;
+                }
+
+                player.player_loop(&mut sprites);
+
+                // Move projectile
+                projectile.move_proj(&mut sprites);
+
+                projectile.check_collision(&mut player);
+
                 // Then send the data to the GPU!
                 input.next_frame();
                 queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
