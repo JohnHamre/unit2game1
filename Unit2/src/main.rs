@@ -303,6 +303,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
     queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprites));
     let mut input = input::Input::default();
+    // Input bools
+    let mut move_right = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
@@ -319,25 +321,33 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
                 // TODO: move sprites, maybe scroll camera
-                if input.is_key_down(winit::event::VirtualKeyCode::Right) {
-                    sprites[0].screen_region = 
-                    [
-                        sprites[0].screen_region[0] + 4.0,
-                        sprites[0].screen_region[1],
-                        sprites[0].screen_region[2],
-                        sprites[0].screen_region[3]
-                    ]
+                if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
+                    move_right = true;
+                    println!("Down");
+                }
+                if input.is_key_released(winit::event::VirtualKeyCode::Right) {
+                    move_right = false;
+                    println!("Up");
                 }
                 else if input.is_key_down(winit::event::VirtualKeyCode::Left) {
                     sprites[0].screen_region = 
                     [
-                        sprites[0].screen_region[0] - 4.0,
+                        sprites[0].screen_region[0] - 8.0,
                         sprites[0].screen_region[1],
                         sprites[0].screen_region[2],
                         sprites[0].screen_region[3]
                     ]
                 }
-
+                println!("FIRE");
+                if move_right {
+                    sprites[0].screen_region = 
+                    [
+                        sprites[0].screen_region[0] + 8.0,
+                        sprites[0].screen_region[1],
+                        sprites[0].screen_region[2],
+                        sprites[0].screen_region[3]
+                    ]
+                }
                 // Then send the data to the GPU!
                 input.next_frame();
                 queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
@@ -378,6 +388,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 }
                 queue.submit(Some(encoder.finish()));
                 frame.present();
+
+                window.request_redraw();
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
