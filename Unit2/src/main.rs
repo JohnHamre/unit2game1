@@ -217,7 +217,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     surface.configure(&device, &config);
 
-    let (sprite_tex, _sprite_img) = load_texture("content/king.png", None, &device, &queue)
+    let (sprite_tex, _sprite_img) = load_texture("content/spritesheet.png", None, &device, &queue)
         .await
         .expect("Couldn't load spritesheet texture");
     let view_sprite = sprite_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -247,10 +247,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let sprites: Vec<GPUSprite> = vec![
+    let mut sprites: Vec<GPUSprite> = vec![
         GPUSprite {
-            screen_region: [32.0, 32.0, 64.0, 64.0],
-            sheet_region: [0.0, 16.0 / 32.0, 16.0 / 32.0, 16.0 / 32.0],
+            screen_region: [2.0, 32.0, 64.0, 64.0],
+            sheet_region: [0.0, 16.0 / 32.0, 0.25, 0.25],
         },
         GPUSprite {
             screen_region: [32.0, 128.0, 64.0, 64.0],
@@ -319,6 +319,25 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
                 // TODO: move sprites, maybe scroll camera
+                if input.is_key_down(winit::event::VirtualKeyCode::Right) {
+                    sprites[0].screen_region = 
+                    [
+                        sprites[0].screen_region[0] + 4.0,
+                        sprites[0].screen_region[1],
+                        sprites[0].screen_region[2],
+                        sprites[0].screen_region[3]
+                    ]
+                }
+                else if input.is_key_down(winit::event::VirtualKeyCode::Left) {
+                    sprites[0].screen_region = 
+                    [
+                        sprites[0].screen_region[0] - 4.0,
+                        sprites[0].screen_region[1],
+                        sprites[0].screen_region[2],
+                        sprites[0].screen_region[3]
+                    ]
+                }
+
                 // Then send the data to the GPU!
                 input.next_frame();
                 queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
