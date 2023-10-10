@@ -19,12 +19,12 @@ struct GPUCamera {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod)]
+#[derive(Clone, Copy, Zeroable, Pod, Debug, PartialEq)]
 struct GPUSprite {
     screen_region: [f32; 4],
     sheet_region: [f32; 4],
 }
-
+#[derive(Debug, Clone, PartialEq)]
 struct Projectile {
     pos: (f32, f32),
     size: (f32, f32),
@@ -83,6 +83,15 @@ struct Player {
 
 impl Player {
     fn player_loop(&mut self) {
+        if self.velocity.0 > 0.0 {
+            self.pos = (self.pos.0 + self.speed, self.pos.1);
+            self.facing_right = true;
+        }
+        if self.velocity.0 < 0.0 {
+            self.pos = (self.pos.0 - self.speed, self.pos.1);
+            self.facing_right = false;
+        }
+        
         self.sprite.screen_region = 
         [
             self.pos.0,
@@ -101,6 +110,28 @@ impl Player {
 
     fn add_speed(&mut self, new_velocity: (f32, f32)) {
         self.velocity = (self.velocity.0 + new_velocity.0, self.velocity.1 + new_velocity.1);
+    }
+}
+
+struct Enemy {
+    pos: (f32, f32),
+    size: (f32, f32),
+    speed: f32,
+    velocity: (f32, f32),
+    sprite_index: usize,
+    sprite: GPUSprite,
+    sprite_eyes: GPUSprite,
+}
+
+impl Enemy {
+    fn enemy_loop(&mut self) {
+        self.sprite.screen_region = 
+        [
+            self.pos.0,
+            self.pos.1,
+            self.size.0,
+            self.size.1
+        ];
     }
 }
 
@@ -370,18 +401,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprites));
     let mut input = input::Input::default();
 
-    // Define our projectile
-    let mut projectile = Projectile{
-        pos: (400.0, 500.0),
-        size: (64.0, 64.0),
-        speed: 10.0,
-        spawn_pos: (400.0, 800.0),
-        sprite_index: 1,
-        sprite: GPUSprite {
-            screen_region: [2.0, 32.0, 64.0, 64.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-        },
-    };
+    // Array list for projectiles so it's *not* a headache :)
+    let mut projectiles: Vec<Projectile> = vec![];
+
+    make_projectile(&mut projectiles,1, (200.0, 600.0));
+    make_projectile(&mut projectiles, 2, (400.0, 600.0));
 
     // And our player
     let mut player = Player {
@@ -397,6 +421,22 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         },
     };
 
+    // And our enemy
+    let mut enemy = Enemy {
+        pos: (400.0, 100.0),
+        size: (64.0, 64.0),
+        speed: 6.0,
+        velocity: (0.0, 0.0),
+        sprite_index: 3,
+        sprite: GPUSprite {
+            screen_region: [32.0, 128.0, 64.0, 64.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+        },
+        sprite_eyes: GPUSprite {
+            screen_region: [32.0, 128.0, 64.0, 64.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+        },
+    };
 
     event_loop.run(move |event, _, control_flow| {
         //*control_flow = ControlFlow::Wait;
@@ -413,7 +453,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 window.request_redraw();
             }
             Event::RedrawRequested(_) => {
-                // TODO: move sprites, maybe scroll camera
+                // Player movement!
                 if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
                     player.add_speed((player.speed, 0.0))
                 }
@@ -427,23 +467,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     player.add_speed((player.speed, 0.0))
                 }
 
-                if player.velocity.0 > 0.0 {
-                    player.pos = (player.pos.0 + player.speed, player.pos.1);
-                    player.facing_right = true;
-                }
-                if player.velocity.0 < 0.0 {
-                    player.pos = (player.pos.0 - player.speed, player.pos.1);
-                    player.facing_right = false;
-                }
-
                 player.player_loop();
 
-                // Move projectile
-                projectile.move_proj();
-                projectile.check_collision(&mut player);
+                enemy.enemy_loop();
 
+                // Move projectile
+                for proj in projectiles.iter_mut() {
+                    proj.move_proj();
+                    proj.check_collision(&mut player);
+                    sprites[proj.sprite_index] = proj.sprite;
+                }
+                
                 sprites[player.sprite_index] = player.sprite;
-                sprites[projectile.sprite_index] = projectile.sprite;
+
+                sprites[enemy.sprite_index] = enemy.sprite;
 
                 // Then send the data to the GPU!
                 input.next_frame();
@@ -614,4 +651,19 @@ fn set_sprite(sprite: &mut GPUSprite, index: (f32, f32)) {
         1.0 / SPRITE_SHEET_RESOLUTION.0, 
         1.0 / SPRITE_SHEET_RESOLUTION.1
     ];
+}
+
+fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32)) {
+    let projectile = Projectile{
+        pos: (spawn_pos.0, spawn_pos.1),
+        size: (64.0, 64.0),
+        speed: 10.0,
+        spawn_pos: (spawn_pos.0, spawn_pos.1),
+        sprite_index: index,
+        sprite: GPUSprite {
+            screen_region: [2.0, 32.0, 64.0, 64.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+        },
+    };
+    projectiles.push(projectile);
 }
