@@ -24,12 +24,54 @@ struct GPUSprite {
     screen_region: [f32; 4],
     sheet_region: [f32; 4],
 }
+
+#[derive(Debug, Clone)]
+struct SpriteHolder {
+    sprites: Vec<GPUSprite>,
+    active: Vec<bool>,
+}
+
+impl SpriteHolder {
+    // Gets the next free index for adding a new sprite.
+    fn get_next_index(&mut self) -> usize {
+        for i in 0..self.active.len() {
+            // Optionals are great.
+            match self.active.get(i) {
+                Some(b) => {
+                    if !b {
+                        self.active[i] = true;
+                        return i;
+                    }
+                }
+                None => {}
+            }
+        }
+
+        // This case will never happen but rust thinks it might.
+        return 0;
+    }
+
+    // When an object dies, remove its sprite to prevent lingering graphics
+    fn remove_sprite(&mut self, sprite_index: usize) {
+        // Open up the sprite to be used by a future object.
+        self.active[sprite_index] = false;
+        // And disable rendering for the sprite (by zeroing all its values)
+        self.sprites[sprite_index] = GPUSprite::zeroed();
+    }
+
+    fn set_sprite(&mut self, sprite_index: usize, sprite: GPUSprite) {
+        // Flag the sprite as in use.
+        self.active[sprite_index] = true;
+        // Set the sprite data as passed.
+        self.sprites[sprite_index] = sprite;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Projectile {
     pos: (f32, f32),
     size: (f32, f32),
-    speed: f32,
-    spawn_pos: (f32, f32),
+    velocity: (f32, f32),
     sprite_index: usize,
     sprite: GPUSprite,
 }
@@ -38,7 +80,7 @@ impl Projectile {
     // Called each frame to move the projectile
     fn move_proj(&mut self) {
         // Move down by <speed> amount
-        self.pos = (self.pos.0, self.pos.1 - self.speed);
+        self.pos = (self.pos.0 + self.velocity.0, self.pos.1 + self.velocity.1);
 
         if self.pos.1 < 0.0 {
             self.respawn();
@@ -67,7 +109,7 @@ impl Projectile {
     }
 
     fn respawn(&mut self) {
-        self.pos = (self.spawn_pos.0 + thread_rng().gen_range(-200..=200) as f32, self.spawn_pos.1);
+        self.pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
     }
 }
 
@@ -331,7 +373,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     surface.configure(&device, &config);
 
-    let (sprite_tex, _sprite_img) = load_texture("content/spritesheet.png", None, &device, &queue)
+    let (sprite_tex, _sprite_img) = load_texture("src/content/spritesheet.png", None, &device, &queue)
         .await
         .expect("Couldn't load spritesheet texture");
     let view_sprite = sprite_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -361,10 +403,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let mut sprites: Vec<GPUSprite> = vec![GPUSprite::zeroed();1000];
+    let mut sprite_holder = SpriteHolder {
+        sprites: vec![GPUSprite::zeroed();1000],
+        active: vec![false;1000],
+    };
     let buffer_sprite = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: sprites.len() as u64 * std::mem::size_of::<GPUSprite>() as u64,
+        size: sprite_holder.sprites.len() as u64 * std::mem::size_of::<GPUSprite>() as u64,
         usage: if USE_STORAGE {
             wgpu::BufferUsages::STORAGE
         } else {
@@ -398,14 +443,20 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         })
     };
     queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
-    queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprites));
+    queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprite_holder.sprites));
     let mut input = input::Input::default();
 
     // Array list for projectiles so it's *not* a headache :)
     let mut projectiles: Vec<Projectile> = vec![];
 
-    make_projectile(&mut projectiles,1, (200.0, 600.0));
-    make_projectile(&mut projectiles, 2, (400.0, 600.0));
+    make_projectile(&mut projectiles, 
+                    sprite_holder.get_next_index(), 
+                    (450.0, 650.0),
+                    (0.0, -10.0));
+    make_projectile(&mut projectiles, 
+        sprite_holder.get_next_index(), 
+        (450.0, 650.0),
+        (0.0, -10.0));
 
     // And our player
     let mut player = Player {
@@ -413,7 +464,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         size: (64.0, 64.0),
         speed: 6.0,
         velocity: (0.0, 0.0),
-        sprite_index: 0,
+        sprite_index: sprite_holder.get_next_index(),
         facing_right: true,
         sprite: GPUSprite {
             screen_region: [32.0, 128.0, 64.0, 64.0],
@@ -423,14 +474,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     // And our enemy
     let mut enemy = Enemy {
-        pos: (400.0, 100.0),
+        pos: (450.0, 650.0),
         size: (64.0, 64.0),
         speed: 6.0,
         velocity: (0.0, 0.0),
-        sprite_index: 3,
+        sprite_index: sprite_holder.get_next_index(),
         sprite: GPUSprite {
             screen_region: [32.0, 128.0, 64.0, 64.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
         sprite_eyes: GPUSprite {
             screen_region: [32.0, 128.0, 64.0, 64.0],
@@ -475,17 +526,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 for proj in projectiles.iter_mut() {
                     proj.move_proj();
                     proj.check_collision(&mut player);
-                    sprites[proj.sprite_index] = proj.sprite;
+                    sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
                 }
-                
-                sprites[player.sprite_index] = player.sprite;
+                sprite_holder.set_sprite(player.sprite_index, player.sprite);
 
-                sprites[enemy.sprite_index] = enemy.sprite;
+                sprite_holder.set_sprite(enemy.sprite_index, enemy.sprite);
 
                 // Then send the data to the GPU!
                 input.next_frame();
                 queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
-                queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprites));
+                queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprite_holder.sprites));
 
                 let frame = surface
                     .get_current_texture()
@@ -518,7 +568,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     // this uses instanced drawing, but it would also be okay
                     // to draw 6 * sprites.len() vertices and use modular arithmetic
                     // to figure out which sprite we're drawing.
-                    rpass.draw(0..6, 0..(sprites.len() as u32));
+                    rpass.draw(0..6, 0..(sprite_holder.sprites.len() as u32));
                 }
                 queue.submit(Some(encoder.finish()));
                 frame.present();
@@ -653,12 +703,11 @@ fn set_sprite(sprite: &mut GPUSprite, index: (f32, f32)) {
     ];
 }
 
-fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32)) {
+fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32), velocity: (f32, f32)) {
     let projectile = Projectile{
         pos: (spawn_pos.0, spawn_pos.1),
         size: (64.0, 64.0),
-        speed: 10.0,
-        spawn_pos: (spawn_pos.0, spawn_pos.1),
+        velocity: (velocity.0, velocity.1),
         sprite_index: index,
         sprite: GPUSprite {
             screen_region: [2.0, 32.0, 64.0, 64.0],
