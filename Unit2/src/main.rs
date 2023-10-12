@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use std::borrow::Cow;
+use std::{borrow::Cow, f32::consts::PI};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -71,9 +71,11 @@ impl SpriteHolder {
 struct Projectile {
     pos: (f32, f32),
     size: (f32, f32),
+    speed: f32,
     velocity: (f32, f32),
     sprite_index: usize,
     sprite: GPUSprite,
+    is_dead: bool,
 }
 
 impl Projectile {
@@ -83,7 +85,7 @@ impl Projectile {
         self.pos = (self.pos.0 + self.velocity.0, self.pos.1 + self.velocity.1);
 
         if self.pos.1 < 0.0 {
-            self.respawn();
+            self.kill();
         }
 
         // Update sprite location.
@@ -103,13 +105,19 @@ impl Projectile {
            self.pos.0 <= player.pos.0 + player.size.0 &&
            self.pos.0 + self.size.0 >= player.pos.0 
         {
-            // If colliding, reset spawn and print
-            self.respawn();
+            // Handle logic.
+
+            // If colliding, remove projectile
+            self.kill();
         }
     }
 
-    fn respawn(&mut self) {
-        self.pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
+    fn kill(&mut self) {
+        self.is_dead = true;
+    }
+
+    fn clean_dead(&mut self, sprite_holder: &mut SpriteHolder) {
+        sprite_holder.remove_sprite(self.sprite_index);
     }
 }
 
@@ -124,7 +132,7 @@ struct Player {
 }
 
 impl Player {
-    fn player_loop(&mut self) {
+    fn player_loop(&mut self, sprite_holder: &mut SpriteHolder) {
         if self.velocity.0 > 0.0 {
             self.pos = (self.pos.0 + self.speed, self.pos.1);
             self.facing_right = true;
@@ -148,6 +156,9 @@ impl Player {
         else {
             set_sprite(&mut self.sprite, (2.0, 0.0))
         }
+
+        // Sync sprite to Sprite Holder.
+        sprite_holder.set_sprite(self.sprite_index, self.sprite);
     }
 
     fn add_speed(&mut self, new_velocity: (f32, f32)) {
@@ -166,7 +177,7 @@ struct Enemy {
 }
 
 impl Enemy {
-    fn enemy_loop(&mut self) {
+    fn enemy_loop(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
         self.sprite.screen_region = 
         [
             self.pos.0,
@@ -174,6 +185,19 @@ impl Enemy {
             self.size.0,
             self.size.1
         ];
+
+        self.spawn_new_projectile(projectiles, sprite_holder);
+
+        sprite_holder.set_sprite(self.sprite_index, self.sprite);
+    }
+
+    
+    fn spawn_new_projectile(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+        // Set velocity based on a random angle.
+        let angle: f32 = thread_rng().gen_range((11.0 * PI / 8.0)..=(13.0 * PI / 8.0));
+        let velocity = (angle.cos() * self.speed, angle.sin() * self.speed);
+        let pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
+        make_projectile(projectiles, sprite_holder.get_next_index(), pos, velocity)
     }
 }
 
@@ -449,16 +473,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     // Array list for projectiles so it's *not* a headache :)
     let mut projectiles: Vec<Projectile> = vec![];
 
-    make_projectile(&mut projectiles, 
-                    sprite_holder.get_next_index(), 
-                    (450.0, 650.0),
-                    (0.0, -10.0));
-    make_projectile(&mut projectiles, 
-        sprite_holder.get_next_index(), 
-        (450.0, 650.0),
-        (0.0, -10.0));
-
-    // And our player
+    // Make our player
     let mut player = Player {
         pos: (400.0, 100.0),
         size: (64.0, 64.0),
@@ -504,33 +519,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 window.request_redraw();
             }
             Event::RedrawRequested(_) => {
-                // Player movement!
-                if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
-                    player.add_speed((player.speed, 0.0))
-                }
-                if input.is_key_pressed(winit::event::VirtualKeyCode::Left) {
-                    player.add_speed((-player.speed, 0.0))
-                }
-                if input.is_key_released(winit::event::VirtualKeyCode::Right) {
-                    player.add_speed((-player.speed, 0.0))
-                }
-                if input.is_key_released(winit::event::VirtualKeyCode::Left) {
-                    player.add_speed((player.speed, 0.0))
-                }
 
-                player.player_loop();
-
-                enemy.enemy_loop();
-
-                // Move projectile
-                for proj in projectiles.iter_mut() {
-                    proj.move_proj();
-                    proj.check_collision(&mut player);
-                    sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
-                }
-                sprite_holder.set_sprite(player.sprite_index, player.sprite);
-
-                sprite_holder.set_sprite(enemy.sprite_index, enemy.sprite);
+                main_event_loop(&mut player, &mut enemy, &mut sprite_holder, &mut projectiles, &mut input,);
 
                 // Then send the data to the GPU!
                 input.next_frame();
@@ -707,12 +697,53 @@ fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (
     let projectile = Projectile{
         pos: (spawn_pos.0, spawn_pos.1),
         size: (64.0, 64.0),
+        speed: 10.0,
         velocity: (velocity.0, velocity.1),
         sprite_index: index,
         sprite: GPUSprite {
             screen_region: [2.0, 32.0, 64.0, 64.0],
             sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
+        is_dead: false,
     };
     projectiles.push(projectile);
+}
+
+
+fn main_event_loop(
+    player: &mut Player, 
+    enemy: &mut Enemy, 
+    sprite_holder: &mut SpriteHolder, 
+    projectiles: &mut Vec<Projectile>,
+    input: &mut input::Input,
+) {
+    // Player movement!
+    if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
+        player.add_speed((player.speed, 0.0))
+    }
+    if input.is_key_pressed(winit::event::VirtualKeyCode::Left) {
+        player.add_speed((-player.speed, 0.0))
+    }
+    if input.is_key_released(winit::event::VirtualKeyCode::Right) {
+        player.add_speed((-player.speed, 0.0))
+    }
+    if input.is_key_released(winit::event::VirtualKeyCode::Left) {
+        player.add_speed((player.speed, 0.0))
+    }
+
+    // Loop for the player
+    player.player_loop(sprite_holder);
+
+    // Loop for the enemy
+    enemy.enemy_loop(projectiles, sprite_holder);
+
+    // Move projectile
+    for proj in projectiles.iter_mut() {
+        proj.move_proj();
+        proj.check_collision(player);
+        sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
+    }
+    // Code to remove projectiles. Not very optimal but rust likes it.
+    projectiles.iter_mut().for_each(|proj| if proj.is_dead {proj.clean_dead(sprite_holder)});
+    projectiles.retain(|proj| !proj.is_dead);
 }
