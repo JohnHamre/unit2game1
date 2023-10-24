@@ -82,12 +82,13 @@ struct Projectile {
 
 impl Projectile {
     // Called each frame to move the projectile
-    fn move_proj(&mut self) {
+    fn move_proj(&mut self, player_health_bar: &mut HealthBar) {
         // Move down by <speed> amount
         self.pos = (self.pos.0 + self.velocity.0, self.pos.1 + self.velocity.1);
 
         if self.pos.1 < 0.0 {
             self.kill();
+            Player::damage(1.0, player_health_bar);
         }
 
         // Update sprite location.
@@ -163,6 +164,10 @@ impl Player {
         sprite_holder.set_sprite(self.sprite_index, self.sprite);
     }
 
+    fn damage(amount: f32, player_health_bar: &mut HealthBar) {
+        player_health_bar.currval -= amount;
+    }
+
     fn add_speed(&mut self, new_velocity: (f32, f32)) {
         self.velocity = (self.velocity.0 + new_velocity.0, self.velocity.1 + new_velocity.1);
     }
@@ -176,6 +181,16 @@ struct Enemy {
     sprite_index: usize,
     sprite: GPUSprite,
     sprite_eyes: GPUSprite,
+}
+
+impl Enemy {
+    fn spawn_new_projectile(&self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+        // Set velocity based on a random angle.
+        let angle: f32 = thread_rng().gen_range((11.0 * PI / 8.0)..=(13.0 * PI / 8.0));
+        let velocity = (angle.cos() * self.speed, angle.sin() * self.speed);
+        let pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
+        make_projectile(projectiles, sprite_holder.get_next_index(), pos, velocity)
+    }
 }
 
 struct Entity {
@@ -199,13 +214,34 @@ impl Entity {
     }
 }
 
-impl Enemy {
-    fn spawn_new_projectile(&self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
-        // Set velocity based on a random angle.
-        let angle: f32 = thread_rng().gen_range((11.0 * PI / 8.0)..=(13.0 * PI / 8.0));
-        let velocity = (angle.cos() * self.speed, angle.sin() * self.speed);
-        let pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
-        make_projectile(projectiles, sprite_holder.get_next_index(), pos, velocity)
+struct HealthBar {
+    currval: f32,
+    maxval: f32,
+    bar_pos: (f32, f32, f32, f32),
+    units_per_pixel: f32,
+    sprite_bar: GPUSprite,
+    sprite_border: GPUSprite,
+    sprite_index_bar: usize,
+    sprite_index_border: usize,
+}
+
+impl HealthBar {
+    fn health_bar_loop(&mut self, sprite_holder: &mut SpriteHolder) {
+        // Prevent Health Bar Underflow
+        if self.currval < 0.0 {
+            self.currval = 0.0;
+        }
+
+        self.sprite_bar.screen_region = [
+            self.bar_pos.0, self.bar_pos.1 + self.units_per_pixel, self.bar_pos.2 * (self.currval / self.maxval), self.bar_pos.3 - (2.0 * self.units_per_pixel),
+            ];
+
+        self.sprite_border.screen_region = [
+            self.bar_pos.0, self.bar_pos.1, self.bar_pos.2, self.bar_pos.3,
+        ];
+
+        sprite_holder.set_sprite(self.sprite_index_bar, self.sprite_bar);
+        sprite_holder.set_sprite(self.sprite_index_border, self.sprite_border);
     }
 }
 
@@ -518,6 +554,23 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         })
     };
 
+    let mut player_health_bar = HealthBar {
+        currval: 10.0,
+        maxval: 10.0,
+        bar_pos: (32.0, 32.0, 128.0, 24.0),
+        units_per_pixel: 4.0,
+        sprite_border: GPUSprite {
+            screen_region: [32.0, 32.0, 128.0, 24.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+        },
+        sprite_index_border: sprite_holder.get_next_index(),
+        sprite_bar: GPUSprite {
+            screen_region: [32.0, 36.0, 128.0, 16.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+        },
+        sprite_index_bar: sprite_holder.get_next_index(),
+    };
+
     event_loop.run(move |event, _, control_flow| {
         //*control_flow = ControlFlow::Wait;
         match event {
@@ -534,7 +587,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
 
-                main_event_loop(&mut player, &mut enemy, &mut sprite_holder, &mut projectiles, &mut input,);
+                main_event_loop(&mut player, &mut enemy, &mut sprite_holder, &mut projectiles, &mut input, &mut player_health_bar);
 
                 // Then send the data to the GPU!
                 input.next_frame();
@@ -730,6 +783,7 @@ fn main_event_loop(
     sprite_holder: &mut SpriteHolder, 
     projectiles: &mut Vec<Projectile>,
     input: &mut input::Input,
+    player_health_bar: &mut HealthBar,
 ) {
     // Player movement!
     if input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
@@ -748,12 +802,14 @@ fn main_event_loop(
     // Loop for the player
     player.player_loop(sprite_holder);
 
+    player_health_bar.health_bar_loop(sprite_holder);
+
     // Loop for the enemy
     enemy.enemy_loop(projectiles, sprite_holder);
 
     // Move projectile
     for proj in projectiles.iter_mut() {
-        proj.move_proj();
+        proj.move_proj(player_health_bar);
         proj.check_collision(player);
         sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
     }
