@@ -1,5 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use std::{borrow::Cow, f32::consts::PI};
+use enemy_ai::AI;
+use std::{borrow::Cow, f32::consts::PI, ptr::null};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -7,6 +8,7 @@ use winit::{
 };
 use rand::{thread_rng, Rng};
 mod input;
+mod enemy_ai;
 
 // Sprite Sheet Resolution
 const SPRITE_SHEET_RESOLUTION: (f32, f32) = (4.0, 4.0);
@@ -176,23 +178,29 @@ struct Enemy {
     sprite_eyes: GPUSprite,
 }
 
-impl Enemy {
+struct Entity {
+    enemy: Enemy,
+    ai: Box<dyn enemy_ai::AI>,
+}
+
+impl Entity {
     fn enemy_loop(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
-        self.sprite.screen_region = 
+        self.enemy.sprite.screen_region = 
         [
-            self.pos.0,
-            self.pos.1,
-            self.size.0,
-            self.size.1
+            self.enemy.pos.0,
+            self.enemy.pos.1,
+            self.enemy.size.0,
+            self.enemy.size.1
         ];
 
-        self.spawn_new_projectile(projectiles, sprite_holder);
+        self.ai.ai_loop(projectiles, sprite_holder, &self.enemy);
 
-        sprite_holder.set_sprite(self.sprite_index, self.sprite);
+        sprite_holder.set_sprite(self.enemy.sprite_index, self.enemy.sprite);
     }
+}
 
-    
-    fn spawn_new_projectile(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+impl Enemy {
+    fn spawn_new_projectile(&self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
         // Set velocity based on a random angle.
         let angle: f32 = thread_rng().gen_range((11.0 * PI / 8.0)..=(13.0 * PI / 8.0));
         let velocity = (angle.cos() * self.speed, angle.sin() * self.speed);
@@ -488,20 +496,26 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     };
 
     // And our enemy
-    let mut enemy = Enemy {
-        pos: (450.0, 650.0),
-        size: (64.0, 64.0),
-        speed: 6.0,
-        velocity: (0.0, 0.0),
-        sprite_index: sprite_holder.get_next_index(),
-        sprite: GPUSprite {
-            screen_region: [32.0, 128.0, 64.0, 64.0],
-            sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+    let mut enemy = Entity {
+        enemy: Enemy {
+            pos: (450.0, 650.0),
+            size: (64.0, 64.0),
+            speed: 6.0,
+            velocity: (0.0, 0.0),
+            sprite_index: sprite_holder.get_next_index(),
+            sprite: GPUSprite {
+                screen_region: [32.0, 128.0, 64.0, 64.0],
+                sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            },
+            sprite_eyes: GPUSprite {
+                screen_region: [32.0, 128.0, 64.0, 64.0],
+                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            }
         },
-        sprite_eyes: GPUSprite {
-            screen_region: [32.0, 128.0, 64.0, 64.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-        },
+        ai: Box::new(enemy_ai::Level1AI {
+            max_cooldown: 20,
+            cooldown: 20,
+        })
     };
 
     event_loop.run(move |event, _, control_flow| {
@@ -712,7 +726,7 @@ fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (
 
 fn main_event_loop(
     player: &mut Player, 
-    enemy: &mut Enemy, 
+    enemy: &mut Entity, 
     sprite_holder: &mut SpriteHolder, 
     projectiles: &mut Vec<Projectile>,
     input: &mut input::Input,
