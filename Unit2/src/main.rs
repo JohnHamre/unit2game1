@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use enemy_ai::AI;
-use std::{borrow::Cow, f32::consts::PI, ptr::null};
+use std::{borrow::Cow, f32::consts::PI};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -78,6 +77,7 @@ struct Projectile {
     sprite_index: usize,
     sprite: GPUSprite,
     is_dead: bool,
+    player_spawned: bool,
 }
 
 impl Projectile {
@@ -90,6 +90,10 @@ impl Projectile {
             self.kill();
             Player::damage(1.0, player_health_bar);
         }
+        // Remove if too high
+        else if self.pos.1 > 1000.0 {
+            self.kill();
+        }
 
         // Update sprite location.
         self.sprite.screen_region = 
@@ -101,17 +105,32 @@ impl Projectile {
         ];
     }
 
-    fn check_collision (&mut self, player: &mut Player) {
-        // Check for collision
-        if self.pos.1 <= player.pos.1 + player.size.1 &&
-           self.pos.1 + self.size.1 >= player.pos.1 &&
-           self.pos.0 <= player.pos.0 + player.size.0 &&
-           self.pos.0 + self.size.0 >= player.pos.0 
-        {
-            // Handle logic.
-
-            // If colliding, remove projectile
-            self.kill();
+    fn check_collision (&mut self, player: &mut Player, enemy: &mut Enemy) {
+        if self.player_spawned {
+            // Check for collision
+            if self.pos.1 <= enemy.pos.1 + enemy.size.1 &&
+                self.pos.1 + self.size.1 >= enemy.pos.1 &&
+                self.pos.0 <= enemy.pos.0 + enemy.size.0 &&
+                self.pos.0 + self.size.0 >= enemy.pos.0 
+            {
+                // Handle logic.
+                enemy.damage(1.0);
+                // If colliding, remove projectile
+                self.kill();
+            }
+        }
+        else {
+            // Check for collision
+            if self.pos.1 <= player.pos.1 + player.size.1 &&
+            self.pos.1 + self.size.1 >= player.pos.1 &&
+            self.pos.0 <= player.pos.0 + player.size.0 &&
+            self.pos.0 + self.size.0 >= player.pos.0 
+            {
+                // Handle logic.
+                player.charges += 1;
+                // If colliding, remove projectile
+                self.kill();
+            }
         }
     }
 
@@ -132,6 +151,7 @@ struct Player {
     sprite_index: usize,
     facing_right: bool,
     sprite: GPUSprite,
+    charges: usize,
 }
 
 impl Player {
@@ -171,6 +191,19 @@ impl Player {
     fn add_speed(&mut self, new_velocity: (f32, f32)) {
         self.velocity = (self.velocity.0 + new_velocity.0, self.velocity.1 + new_velocity.1);
     }
+
+    fn spawn_new_projectile(&mut self, speed: f32, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+        // Shoot if player has enough juice. 3 Apples = 1 Orange, ofc.
+        if self.charges >= 3 {
+            // Set velocity based on a random angle.
+            let velocity = (0.0, speed);
+            let pos = (self.pos.0, self.pos.1 + self.size.1);
+            make_player_projectile(projectiles, sprite_holder.get_next_index(), pos, velocity);
+
+            // Reset juice.
+            self.charges = 0;
+        }
+    }
 }
 
 struct Enemy {
@@ -178,9 +211,12 @@ struct Enemy {
     size: (f32, f32),
     speed: f32,
     velocity: (f32, f32),
+    frame: f32,
     sprite_index: usize,
+    sprite_index_eyes: usize,
     sprite: GPUSprite,
     sprite_eyes: GPUSprite,
+    health_bar: HealthBar,
 }
 
 impl Enemy {
@@ -191,6 +227,10 @@ impl Enemy {
         let pos = (450.0 + thread_rng().gen_range(-20..=20) as f32, 650.0);
         make_projectile(projectiles, sprite_holder.get_next_index(), pos, velocity)
     }
+
+    fn damage(&mut self, amount: f32) {
+        self.health_bar.currval -= amount;
+    }
 }
 
 struct Entity {
@@ -200,6 +240,9 @@ struct Entity {
 
 impl Entity {
     fn enemy_loop(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+        self.enemy.pos = (self.enemy.pos.0 + self.enemy.velocity.0, self.enemy.pos.1 + self.enemy.velocity.1);
+        
+        // Sync the base sprite to screen position.
         self.enemy.sprite.screen_region = 
         [
             self.enemy.pos.0,
@@ -208,9 +251,38 @@ impl Entity {
             self.enemy.size.1
         ];
 
+        // Animate the spikes of the spikey boi.
+        if (self.enemy.frame * 20.0) as usize % 20 == 0 {
+            self.enemy.sprite.sheet_region = [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1];
+        }
+        else if (self.enemy.frame * 20.0) as usize % 10 == 0 {
+            self.enemy.sprite.sheet_region = [2.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1];
+        }
+
+        // Sync the eyes sprite to the screen pos and animate bob.
+        self.enemy.sprite_eyes.screen_region = 
+        [
+            self.enemy.pos.0,
+            self.enemy.pos.1 - 2.0 + 4.0 * self.enemy.frame.sin(),
+            self.enemy.size.0,
+            self.enemy.size.1
+        ];
+
         self.ai.ai_loop(projectiles, sprite_holder, &self.enemy);
+    
+        self.enemy.health_bar.bar_pos = (
+            self.enemy.pos.0 - 32.0, 
+            self.enemy.pos.1 + 72.0, 
+            self.enemy.health_bar.bar_pos.2, 
+            self.enemy.health_bar.bar_pos.3
+        );
+
+        self.enemy.frame += 0.05;
 
         sprite_holder.set_sprite(self.enemy.sprite_index, self.enemy.sprite);
+        sprite_holder.set_sprite(self.enemy.sprite_index_eyes, self.enemy.sprite_eyes);
+
+        self.enemy.health_bar.health_bar_loop(sprite_holder);
     }
 }
 
@@ -529,6 +601,24 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             screen_region: [32.0, 128.0, 64.0, 64.0],
             sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
+        charges: 0,
+    };
+
+    let enemy_health_bar = HealthBar {
+        currval: 10.0,
+        maxval: 10.0,
+        bar_pos: (32.0, 600.0, 128.0, 24.0),
+        units_per_pixel: 4.0,
+        sprite_border: GPUSprite {
+            screen_region: [32.0, 32.0, 128.0, 24.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+        },
+        sprite_index_border: sprite_holder.get_next_index(),
+        sprite_bar: GPUSprite {
+            screen_region: [32.0, 36.0, 128.0, 16.0],
+            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+        },
+        sprite_index_bar: sprite_holder.get_next_index(),
     };
 
     // And our enemy
@@ -539,18 +629,21 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             speed: 6.0,
             velocity: (0.0, 0.0),
             sprite_index: sprite_holder.get_next_index(),
+            sprite_index_eyes: sprite_holder.get_next_index(),
+            frame: 0.0,
             sprite: GPUSprite {
                 screen_region: [32.0, 128.0, 64.0, 64.0],
                 sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
             },
             sprite_eyes: GPUSprite {
                 screen_region: [32.0, 128.0, 64.0, 64.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-            }
+                sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            },
+            health_bar: enemy_health_bar,
         },
         ai: Box::new(enemy_ai::Level1AI {
-            max_cooldown: 20,
-            cooldown: 20,
+            max_cooldown: 40,
+            cooldown: 0,
         })
     };
 
@@ -587,7 +680,14 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
 
-                main_event_loop(&mut player, &mut enemy, &mut sprite_holder, &mut projectiles, &mut input, &mut player_health_bar);
+                main_event_loop(
+                    &mut player, 
+                    &mut enemy, 
+                    &mut sprite_holder, 
+                    &mut projectiles, 
+                    &mut input, 
+                    &mut player_health_bar, 
+                );
 
                 // Then send the data to the GPU!
                 input.next_frame();
@@ -772,6 +872,24 @@ fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (
             sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
         },
         is_dead: false,
+        player_spawned: false,
+    };
+    projectiles.push(projectile);
+}
+
+fn make_player_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32), velocity: (f32, f32)) {
+    let projectile = Projectile{
+        pos: (spawn_pos.0, spawn_pos.1),
+        size: (64.0, 64.0),
+        speed: 10.0,
+        velocity: (velocity.0, velocity.1),
+        sprite_index: index,
+        sprite: GPUSprite {
+            screen_region: [2.0, 32.0, 64.0, 64.0],
+            sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+        },
+        is_dead: false,
+        player_spawned: true,
     };
     projectiles.push(projectile);
 }
@@ -799,6 +917,11 @@ fn main_event_loop(
         player.add_speed((player.speed, 0.0))
     }
 
+    // Shoot!
+    if input.is_key_down(winit::event::VirtualKeyCode::Space) {
+        player.spawn_new_projectile(10.0, projectiles, sprite_holder)
+    }
+
     // Loop for the player
     player.player_loop(sprite_holder);
 
@@ -810,7 +933,7 @@ fn main_event_loop(
     // Move projectile
     for proj in projectiles.iter_mut() {
         proj.move_proj(player_health_bar);
-        proj.check_collision(player);
+        proj.check_collision(player, &mut enemy.enemy);
         sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
     }
     // Code to remove projectiles. Not very optimal but rust likes it.
