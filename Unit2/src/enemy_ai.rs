@@ -12,7 +12,7 @@ pub struct Level0AI {
 }
 
 impl AI for Level0AI {
-    fn ai_loop(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder, enemy: &Enemy) {
+    fn ai_loop(&mut self, _projectiles: &mut Vec<Projectile>, _sprite_holder: &mut SpriteHolder, _enemy: &Enemy) {
         // Do nothing, used for Empty AI
     }
 }

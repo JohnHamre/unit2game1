@@ -27,7 +27,7 @@ struct GPUSprite {
 }
 
 #[derive(Debug, Clone)]
-struct SpriteHolder {
+pub struct SpriteHolder {
     sprites: Vec<GPUSprite>,
     active: Vec<bool>,
 }
@@ -69,7 +69,7 @@ impl SpriteHolder {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Projectile {
+pub struct Projectile {
     pos: (f32, f32),
     size: (f32, f32),
     speed: f32,
@@ -143,7 +143,7 @@ impl Projectile {
     }
 }
 
-struct Player {
+pub struct Player {
     pos: (f32, f32),
     size: (f32, f32),
     speed: f32,
@@ -206,7 +206,7 @@ impl Player {
     }
 }
 
-struct Enemy {
+pub struct Enemy {
     pos: (f32, f32),
     size: (f32, f32),
     speed: f32,
