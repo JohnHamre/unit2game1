@@ -693,7 +693,28 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             },
             sprite_index_bar: 0,
         },
-        title_screen: TitleScreen { 
+        title_screen: Screen { 
+            sprite: GPUSprite {
+                screen_region: [160.0, 32.0, 720.0, 720.0],
+                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
+            }, 
+            sprite_index: sprite_holder.get_next_index(),
+        },
+        death_screen: Screen { 
+            sprite: GPUSprite {
+                screen_region: [160.0, 32.0, 720.0, 720.0],
+                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
+            }, 
+            sprite_index: sprite_holder.get_next_index(),
+        },
+        cleared_screen: Screen { 
+            sprite: GPUSprite {
+                screen_region: [160.0, 32.0, 720.0, 720.0],
+                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
+            }, 
+            sprite_index: sprite_holder.get_next_index(),
+        },
+        win_screen: Screen { 
             sprite: GPUSprite {
                 screen_region: [160.0, 32.0, 720.0, 720.0],
                 sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
