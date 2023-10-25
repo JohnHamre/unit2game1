@@ -1,16 +1,20 @@
 use bytemuck::{Pod, Zeroable};
+use kira::{
+    manager::{backend::DefaultBackend, AudioManager, AudioManagerSettings},
+    sound::static_sound::{StaticSoundData, StaticSoundSettings},
+};
+use rand::{thread_rng, Rng};
 use std::{borrow::Cow, f32::consts::PI};
 use winit::{
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::Window,
 };
-use rand::{thread_rng, Rng};
-mod input;
 mod enemy_ai;
+mod input;
 
 // Sprite Sheet Resolution
-const SPRITE_SHEET_RESOLUTION: (f32, f32) = (12.0, 16.0);
+const SPRITE_SHEET_RESOLUTION: (f32, f32) = (8.0, 8.0);
 
 #[repr(C)]
 #[derive(Clone, Copy, Zeroable, Pod)]
@@ -28,32 +32,30 @@ struct GPUSprite {
 
 // A massive struct used to hold every major variable in the game.
 struct GameStateHolder {
-    player: Player, 
-    enemy: Entity, 
-    sprite_holder: SpriteHolder, 
-    projectiles: Vec<Projectile>, 
-    input: input::Input, 
-    player_health_bar: HealthBar, 
+    player: Player,
+    enemy: Entity,
+    sprite_holder: SpriteHolder,
+    projectiles: Vec<Projectile>,
+    input: input::Input,
+    player_health_bar: HealthBar,
     game_state: GameState,
-    title_screen: Screen,
-    death_screen: Screen,
-    cleared_screen: Screen,
-    win_screen: Screen,
+    title_screen: TitleScreen,
+    sound_manager: AudioManager,
 }
 
 struct GameState {
     // This should be done better... but it isn't.
     /*
-        0 = Title Screen
-        1 = Gameplay
-        2 = Game Over
-        3 = Stage Cleared
-        4 = You Win!
-     */
+       0 = Title Screen
+       1 = Gameplay
+       2 = Game Over
+       3 = Stage Cleared
+       4 = You Win!
+    */
     state: usize,
 }
 
-struct Screen {
+struct TitleScreen {
     sprite: GPUSprite,
     sprite_index: usize,
 }
@@ -128,40 +130,48 @@ impl Projectile {
         }
 
         // Update sprite location.
-        self.sprite.screen_region = 
-        [
-            self.pos.0,
-            self.pos.1,
-            self.size.0,
-            self.size.1
-        ];
+        self.sprite.screen_region = [self.pos.0, self.pos.1, self.size.0, self.size.1];
     }
 
-    fn check_collision (&mut self, player: &mut Player, enemy: &mut Enemy) {
+    fn check_collision(
+        &mut self,
+        player: &mut Player,
+        enemy: &mut Enemy,
+        sound_manager: &mut AudioManager,
+    ) {
         if self.player_spawned {
             // Check for collision
-            if self.pos.1 <= enemy.pos.1 + enemy.size.1 &&
-                self.pos.1 + self.size.1 >= enemy.pos.1 &&
-                self.pos.0 <= enemy.pos.0 + enemy.size.0 &&
-                self.pos.0 + self.size.0 >= enemy.pos.0 
+            if self.pos.1 <= enemy.pos.1 + enemy.size.1
+                && self.pos.1 + self.size.1 >= enemy.pos.1
+                && self.pos.0 <= enemy.pos.0 + enemy.size.0
+                && self.pos.0 + self.size.0 >= enemy.pos.0
             {
+                // TODO: player throwing projectile
+                let sound_data =
+                    StaticSoundData::from_file("enemy_hit.ogg", StaticSoundSettings::default())
+                        .unwrap();
+
+                sound_manager.play(sound_data);
+
                 // Handle logic.
                 enemy.damage(1.0);
                 // If colliding, remove projectile
                 self.kill();
             }
-        }
-        else {
+        } else {
             // Check for collision
-            if self.pos.1 <= player.pos.1 + player.size.1 &&
-            self.pos.1 + self.size.1 >= player.pos.1 &&
-            self.pos.0 <= player.pos.0 + player.size.0 &&
-            self.pos.0 + self.size.0 >= player.pos.0 
+            if self.pos.1 <= player.pos.1 + player.size.1
+                && self.pos.1 + self.size.1 >= player.pos.1
+                && self.pos.0 <= player.pos.0 + player.size.0
+                && self.pos.0 + self.size.0 >= player.pos.0
             {
+                // TODO: enemy throwing projectile
                 // Handle logic.
                 player.charges += 1;
                 // If colliding, remove projectile
                 self.kill();
+            } else {
+                // TODO: player missed
             }
         }
     }
@@ -196,19 +206,12 @@ impl Player {
             self.pos = (self.pos.0 - self.speed, self.pos.1);
             self.facing_right = false;
         }
-        
-        self.sprite.screen_region = 
-        [
-            self.pos.0,
-            self.pos.1,
-            self.size.0,
-            self.size.1
-        ];
+
+        self.sprite.screen_region = [self.pos.0, self.pos.1, self.size.0, self.size.1];
 
         if self.facing_right {
             set_sprite(&mut self.sprite, (0.0, 0.0))
-        }
-        else {
+        } else {
             set_sprite(&mut self.sprite, (2.0, 0.0))
         }
 
@@ -221,12 +224,25 @@ impl Player {
     }
 
     fn add_speed(&mut self, new_velocity: (f32, f32)) {
-        self.velocity = (self.velocity.0 + new_velocity.0, self.velocity.1 + new_velocity.1);
+        self.velocity = (
+            self.velocity.0 + new_velocity.0,
+            self.velocity.1 + new_velocity.1,
+        );
     }
 
-    fn spawn_new_projectile(&mut self, speed: f32, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+    fn spawn_new_projectile(
+        &mut self,
+        speed: f32,
+        projectiles: &mut Vec<Projectile>,
+        sprite_holder: &mut SpriteHolder,
+        sound_manager: &mut AudioManager,
+    ) {
         // Shoot if player has enough juice. 3 Apples = 1 Orange, ofc.
         if self.charges >= 3 {
+            let sound_data =
+                StaticSoundData::from_file("player_shoot.ogg", StaticSoundSettings::default())
+                    .unwrap();
+            sound_manager.play(sound_data);
             // Set velocity based on a random angle.
             let velocity = (0.0, speed);
             let pos = (self.pos.0, self.pos.1 + self.size.1);
@@ -252,7 +268,11 @@ pub struct Enemy {
 }
 
 impl Enemy {
-    fn spawn_new_projectile(&self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
+    fn spawn_new_projectile(
+        &self,
+        projectiles: &mut Vec<Projectile>,
+        sprite_holder: &mut SpriteHolder,
+    ) {
         // Set velocity based on a random angle.
         let angle: f32 = thread_rng().gen_range((11.0 * PI / 8.0)..=(13.0 * PI / 8.0));
         let velocity = (angle.cos() * self.speed, angle.sin() * self.speed);
@@ -272,41 +292,51 @@ struct Entity {
 
 impl Entity {
     fn enemy_loop(&mut self, projectiles: &mut Vec<Projectile>, sprite_holder: &mut SpriteHolder) {
-        self.enemy.pos = (self.enemy.pos.0 + self.enemy.velocity.0, self.enemy.pos.1 + self.enemy.velocity.1);
-        
+        self.enemy.pos = (
+            self.enemy.pos.0 + self.enemy.velocity.0,
+            self.enemy.pos.1 + self.enemy.velocity.1,
+        );
+
         // Sync the base sprite to screen position.
-        self.enemy.sprite.screen_region = 
-        [
+        self.enemy.sprite.screen_region = [
             self.enemy.pos.0,
             self.enemy.pos.1,
             self.enemy.size.0,
-            self.enemy.size.1
+            self.enemy.size.1,
         ];
 
         // Animate the spikes of the spikey boi.
         if (self.enemy.frame * 20.0) as usize % 20 == 0 {
-            self.enemy.sprite.sheet_region = [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1];
-        }
-        else if (self.enemy.frame * 20.0) as usize % 10 == 0 {
-            self.enemy.sprite.sheet_region = [2.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1];
+            self.enemy.sprite.sheet_region = [
+                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+            ];
+        } else if (self.enemy.frame * 20.0) as usize % 10 == 0 {
+            self.enemy.sprite.sheet_region = [
+                2.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+            ];
         }
 
         // Sync the eyes sprite to the screen pos and animate bob.
-        self.enemy.sprite_eyes.screen_region = 
-        [
+        self.enemy.sprite_eyes.screen_region = [
             self.enemy.pos.0,
             self.enemy.pos.1 - 2.0 + 4.0 * self.enemy.frame.sin(),
             self.enemy.size.0,
-            self.enemy.size.1
+            self.enemy.size.1,
         ];
 
         self.ai.ai_loop(projectiles, sprite_holder, &self.enemy);
-    
+
         self.enemy.health_bar.bar_pos = (
-            self.enemy.pos.0 - 32.0, 
-            self.enemy.pos.1 + 72.0, 
-            self.enemy.health_bar.bar_pos.2, 
-            self.enemy.health_bar.bar_pos.3
+            self.enemy.pos.0 - 32.0,
+            self.enemy.pos.1 + 72.0,
+            self.enemy.health_bar.bar_pos.2,
+            self.enemy.health_bar.bar_pos.3,
         );
 
         self.enemy.frame += 0.05;
@@ -337,11 +367,17 @@ impl HealthBar {
         }
 
         self.sprite_bar.screen_region = [
-            self.bar_pos.0, self.bar_pos.1 + self.units_per_pixel, self.bar_pos.2 * (self.currval / self.maxval), self.bar_pos.3 - (2.0 * self.units_per_pixel),
-            ];
+            self.bar_pos.0,
+            self.bar_pos.1 + self.units_per_pixel,
+            self.bar_pos.2 * (self.currval / self.maxval),
+            self.bar_pos.3 - (2.0 * self.units_per_pixel),
+        ];
 
         self.sprite_border.screen_region = [
-            self.bar_pos.0, self.bar_pos.1, self.bar_pos.2, self.bar_pos.3,
+            self.bar_pos.0,
+            self.bar_pos.1,
+            self.bar_pos.2,
+            self.bar_pos.3,
         ];
 
         sprite_holder.set_sprite(self.sprite_index_bar, self.sprite_bar);
@@ -356,9 +392,7 @@ const USE_STORAGE: bool = false;
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
     // Initial game state. This object controls the state of the game.
-    let game_state = GameState {
-        state: 0,
-    };
+    let game_state = GameState { state: 0 };
 
     let size = window.inner_size();
 
@@ -550,9 +584,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
     surface.configure(&device, &config);
 
-    let (sprite_tex, _sprite_img) = load_texture("src/content/spritesheet.png", None, &device, &queue)
-        .await
-        .expect("Couldn't load spritesheet texture");
+    let (sprite_tex, _sprite_img) =
+        load_texture("src/content/spritesheet.png", None, &device, &queue)
+            .await
+            .expect("Couldn't load spritesheet texture");
     let view_sprite = sprite_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let sampler_sprite = device.create_sampler(&wgpu::SamplerDescriptor::default());
     let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -581,8 +616,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         mapped_at_creation: false,
     });
     let mut sprite_holder = SpriteHolder {
-        sprites: vec![GPUSprite::zeroed();1000],
-        active: vec![false;1000],
+        sprites: vec![GPUSprite::zeroed(); 1000],
+        active: vec![false; 1000],
     };
     let buffer_sprite = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -620,9 +655,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         })
     };
     queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
-    queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&sprite_holder.sprites));
+    queue.write_buffer(
+        &buffer_sprite,
+        0,
+        bytemuck::cast_slice(&sprite_holder.sprites),
+    );
 
-    // No one should read this mess of a declaration. 
+    let sound_manager =
+        AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()).unwrap();
+
+    // No one should read this mess of a declaration.
     // Contains a bunch of initial data for starting the game.
     let mut gso = GameStateHolder {
         game_state: game_state,
@@ -635,7 +677,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             facing_right: true,
             sprite: GPUSprite {
                 screen_region: [32.0, 128.0, 64.0, 64.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+                sheet_region: [
+                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                    0.0 / SPRITE_SHEET_RESOLUTION.1,
+                    1.0 / SPRITE_SHEET_RESOLUTION.0,
+                    1.0 / SPRITE_SHEET_RESOLUTION.1,
+                ],
             },
             charges: 0,
         },
@@ -650,11 +697,21 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 frame: 0.0,
                 sprite: GPUSprite {
                     screen_region: [32.0, 128.0, 64.0, 64.0],
-                    sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+                    sheet_region: [
+                        1.0 / SPRITE_SHEET_RESOLUTION.0,
+                        1.0 / SPRITE_SHEET_RESOLUTION.1,
+                        1.0 / SPRITE_SHEET_RESOLUTION.0,
+                        1.0 / SPRITE_SHEET_RESOLUTION.1,
+                    ],
                 },
                 sprite_eyes: GPUSprite {
                     screen_region: [32.0, 128.0, 64.0, 64.0],
-                    sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+                    sheet_region: [
+                        3.0 / SPRITE_SHEET_RESOLUTION.0,
+                        1.0 / SPRITE_SHEET_RESOLUTION.1,
+                        1.0 / SPRITE_SHEET_RESOLUTION.0,
+                        1.0 / SPRITE_SHEET_RESOLUTION.1,
+                    ],
                 },
                 health_bar: HealthBar {
                     currval: 10.0,
@@ -663,17 +720,27 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     units_per_pixel: 4.0,
                     sprite_border: GPUSprite {
                         screen_region: [32.0, 32.0, 128.0, 24.0],
-                        sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                        sheet_region: [
+                            0.0 / SPRITE_SHEET_RESOLUTION.0,
+                            2.0 / SPRITE_SHEET_RESOLUTION.1,
+                            2.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                        ],
                     },
                     sprite_index_border: 0,
                     sprite_bar: GPUSprite {
                         screen_region: [32.0, 36.0, 128.0, 16.0],
-                        sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                        sheet_region: [
+                            0.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (2.0 + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1,
+                            2.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                        ],
                     },
                     sprite_index_bar: 0,
                 },
             },
-            ai: Box::new(enemy_ai::Level0AI {})
+            ai: Box::new(enemy_ai::Level0AI {}),
         },
         projectiles: vec![],
         input: input::Input::default(),
@@ -684,44 +751,39 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             units_per_pixel: 4.0,
             sprite_border: GPUSprite {
                 screen_region: [32.0, 32.0, 128.0, 24.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                sheet_region: [
+                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                    2.0 / SPRITE_SHEET_RESOLUTION.1,
+                    2.0 / SPRITE_SHEET_RESOLUTION.0,
+                    (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                ],
             },
             sprite_index_border: 0,
             sprite_bar: GPUSprite {
                 screen_region: [32.0, 36.0, 128.0, 16.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                sheet_region: [
+                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                    (2.0 + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1,
+                    2.0 / SPRITE_SHEET_RESOLUTION.0,
+                    (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                ],
             },
             sprite_index_bar: 0,
         },
-        title_screen: Screen { 
+        title_screen: TitleScreen {
             sprite: GPUSprite {
                 screen_region: [160.0, 32.0, 720.0, 720.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
-            }, 
-            sprite_index: sprite_holder.get_next_index(),
-        },
-        death_screen: Screen { 
-            sprite: GPUSprite {
-                screen_region: [160.0, 32.0, 720.0, 720.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
-            }, 
-            sprite_index: sprite_holder.get_next_index(),
-        },
-        cleared_screen: Screen { 
-            sprite: GPUSprite {
-                screen_region: [160.0, 32.0, 720.0, 720.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
-            }, 
-            sprite_index: sprite_holder.get_next_index(),
-        },
-        win_screen: Screen { 
-            sprite: GPUSprite {
-                screen_region: [160.0, 32.0, 720.0, 720.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1, 4.0 / SPRITE_SHEET_RESOLUTION.0, 4.0 / SPRITE_SHEET_RESOLUTION.1],
-            }, 
+                sheet_region: [
+                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                    4.0 / SPRITE_SHEET_RESOLUTION.1,
+                    4.0 / SPRITE_SHEET_RESOLUTION.0,
+                    4.0 / SPRITE_SHEET_RESOLUTION.1,
+                ],
+            },
             sprite_index: sprite_holder.get_next_index(),
         },
         sprite_holder: sprite_holder,
+        sound_manager: sound_manager,
     };
 
     event_loop.run(move |event, _, control_flow| {
@@ -739,7 +801,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 window.request_redraw();
             }
             Event::RedrawRequested(_) => {
-
                 // Control the event loop in each state
                 match gso.game_state.state {
                     0 => {
@@ -756,7 +817,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 // Then send the data to the GPU!
                 gso.input.next_frame();
                 queue.write_buffer(&buffer_camera, 0, bytemuck::bytes_of(&camera));
-                queue.write_buffer(&buffer_sprite, 0, bytemuck::cast_slice(&gso.sprite_holder.sprites));
+                queue.write_buffer(
+                    &buffer_sprite,
+                    0,
+                    bytemuck::cast_slice(&gso.sprite_holder.sprites),
+                );
 
                 let frame = surface
                     .get_current_texture()
@@ -917,15 +982,20 @@ async fn load_texture(
 
 fn set_sprite(sprite: &mut GPUSprite, index: (f32, f32)) {
     sprite.sheet_region = [
-        index.0 / SPRITE_SHEET_RESOLUTION.0, 
-        index.1 / SPRITE_SHEET_RESOLUTION.1, 
-        1.0 / SPRITE_SHEET_RESOLUTION.0, 
-        1.0 / SPRITE_SHEET_RESOLUTION.1
+        index.0 / SPRITE_SHEET_RESOLUTION.0,
+        index.1 / SPRITE_SHEET_RESOLUTION.1,
+        1.0 / SPRITE_SHEET_RESOLUTION.0,
+        1.0 / SPRITE_SHEET_RESOLUTION.1,
     ];
 }
 
-fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32), velocity: (f32, f32)) {
-    let projectile = Projectile{
+fn make_projectile(
+    projectiles: &mut Vec<Projectile>,
+    index: usize,
+    spawn_pos: (f32, f32),
+    velocity: (f32, f32),
+) {
+    let projectile = Projectile {
         pos: (spawn_pos.0, spawn_pos.1),
         size: (64.0, 64.0),
         speed: 10.0,
@@ -933,7 +1003,12 @@ fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (
         sprite_index: index,
         sprite: GPUSprite {
             screen_region: [2.0, 32.0, 64.0, 64.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            sheet_region: [
+                0.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+            ],
         },
         is_dead: false,
         player_spawned: false,
@@ -941,8 +1016,13 @@ fn make_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (
     projectiles.push(projectile);
 }
 
-fn make_player_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn_pos: (f32, f32), velocity: (f32, f32)) {
-    let projectile = Projectile{
+fn make_player_projectile(
+    projectiles: &mut Vec<Projectile>,
+    index: usize,
+    spawn_pos: (f32, f32),
+    velocity: (f32, f32),
+) {
+    let projectile = Projectile {
         pos: (spawn_pos.0, spawn_pos.1),
         size: (64.0, 64.0),
         speed: 10.0,
@@ -950,7 +1030,12 @@ fn make_player_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn
         sprite_index: index,
         sprite: GPUSprite {
             screen_region: [2.0, 32.0, 64.0, 64.0],
-            sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
+            sheet_region: [
+                3.0 / SPRITE_SHEET_RESOLUTION.0,
+                2.0 / SPRITE_SHEET_RESOLUTION.1,
+                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                1.0 / SPRITE_SHEET_RESOLUTION.1,
+            ],
         },
         is_dead: false,
         player_spawned: true,
@@ -958,252 +1043,197 @@ fn make_player_projectile(projectiles: &mut Vec<Projectile>, index: usize, spawn
     projectiles.push(projectile);
 }
 
-
 fn main_event_loop(gso: &mut GameStateHolder) {
     // Player movement!
-    if gso.input.is_key_pressed(winit::event::VirtualKeyCode::Right) {
+    if gso
+        .input
+        .is_key_pressed(winit::event::VirtualKeyCode::Right)
+    {
         gso.player.add_speed((gso.player.speed, 0.0))
     }
     if gso.input.is_key_pressed(winit::event::VirtualKeyCode::Left) {
         gso.player.add_speed((-gso.player.speed, 0.0))
     }
-    if gso.input.is_key_released(winit::event::VirtualKeyCode::Right) {
+    if gso
+        .input
+        .is_key_released(winit::event::VirtualKeyCode::Right)
+    {
         gso.player.add_speed((-gso.player.speed, 0.0))
     }
-    if gso.input.is_key_released(winit::event::VirtualKeyCode::Left) {
+    if gso
+        .input
+        .is_key_released(winit::event::VirtualKeyCode::Left)
+    {
         gso.player.add_speed((gso.player.speed, 0.0))
     }
 
     // Shoot!
     if gso.input.is_key_down(winit::event::VirtualKeyCode::Space) {
-        gso.player.spawn_new_projectile(10.0, &mut gso.projectiles, &mut gso.sprite_holder)
+        gso.player.spawn_new_projectile(
+            10.0,
+            &mut gso.projectiles,
+            &mut gso.sprite_holder,
+            &mut gso.sound_manager,
+        )
     }
 
     // Loop for the player
     gso.player.player_loop(&mut gso.sprite_holder);
 
-    gso.player_health_bar.health_bar_loop(&mut gso.sprite_holder);
+    gso.player_health_bar
+        .health_bar_loop(&mut gso.sprite_holder);
 
     // Loop for the enemy
-    gso.enemy.enemy_loop(&mut gso.projectiles, &mut gso.sprite_holder);
+    gso.enemy
+        .enemy_loop(&mut gso.projectiles, &mut gso.sprite_holder);
 
     // Move projectile
     for proj in gso.projectiles.iter_mut() {
         proj.move_proj(&mut gso.player_health_bar);
-        proj.check_collision(&mut gso.player, &mut gso.enemy.enemy);
+        proj.check_collision(
+            &mut gso.player,
+            &mut gso.enemy.enemy,
+            &mut gso.sound_manager,
+        );
         gso.sprite_holder.set_sprite(proj.sprite_index, proj.sprite);
     }
     // Code to remove projectiles. Not very optimal but rust likes it.
-    gso.projectiles.iter_mut().for_each(|proj| if proj.is_dead {proj.clean_dead(&mut gso.sprite_holder)});
+    gso.projectiles.iter_mut().for_each(|proj| {
+        if proj.is_dead {
+            proj.clean_dead(&mut gso.sprite_holder)
+        }
+    });
     gso.projectiles.retain(|proj| !proj.is_dead);
 }
 
 fn title_screen_loop(gso: &mut GameStateHolder) {
     if gso.input.is_key_down(winit::event::VirtualKeyCode::Space) {
         transition_to_state(1, gso);
-        gso.title_screen.sprite.screen_region = [0.0,0.0,0.0,0.0];
+        gso.title_screen.sprite.screen_region = [0.0, 0.0, 0.0, 0.0];
     }
 
-    gso.sprite_holder.set_sprite(gso.title_screen.sprite_index, gso.title_screen.sprite);
+    gso.sprite_holder
+        .set_sprite(gso.title_screen.sprite_index, gso.title_screen.sprite);
 }
-
-fn death_screen_loop (gso: &mut GameStateHolder) {
-    
-}
-
 
 fn transition_to_state(new_state: usize, gso: &mut GameStateHolder) {
-    match gso.game_state.state{
-        0 => {
-            match new_state {
-                1 => {
-                    gso.game_state.state = new_state;
-                    load_level_1(gso);
-                }
-                _ => {
-                    println!("Cannot transition from state {} to state {}", gso.game_state.state, new_state);
-                }
-            }
-        }
-        1 => {
-            // Dump all old sprites!
-
-            match new_state {
-                // Game Over
-                2 => {
-                    gso.game_state.state = new_state;
-                    load_dead_level(gso);
-                }
-                // Stage Cleared
-                3 => {
-                    gso.game_state.state = new_state;
-                    load_dead_level(gso);
-                }
-                // You  Win
-                4 => {
-                    gso.game_state.state = new_state;
-                    load_dead_level(gso);
-                }
-                _ => {
-                    println!("Cannot transition from state {} to state {}", gso.game_state.state, new_state);
-                }
-            }
-        }
-        _ => {
-            println!("Cannot transition from state {}", gso.game_state.state);
-        }
-    }
-}
-
-fn load_dead_level(gso : &mut GameStateHolder) {
-    // Clear out old sprites.
-    gso.sprite_holder.remove_sprite(gso.player.sprite_index);
-    gso.sprite_holder.remove_sprite(gso.enemy.enemy.sprite_index);
-    gso.sprite_holder.remove_sprite(gso.enemy.enemy.sprite_index_eyes);
-    gso.sprite_holder.remove_sprite(gso.enemy.enemy.health_bar.sprite_index_bar);
-    gso.sprite_holder.remove_sprite(gso.enemy.enemy.health_bar.sprite_index_border);
-    gso.sprite_holder.remove_sprite(gso.player_health_bar.sprite_index_bar);
-    gso.sprite_holder.remove_sprite(gso.player_health_bar.sprite_index_border);
-
-    // Purge Projectiles
-    gso.projectiles.iter_mut().for_each(|proj| {proj.kill(); if proj.is_dead {proj.clean_dead(&mut gso.sprite_holder)}});
-    gso.projectiles.retain(|proj| !proj.is_dead);
-
-    // Set values to dead state values.
-    gso.player = Player {
-        pos: (400.0, 100.0),
-        size: (64.0, 64.0),
-        speed: 6.0,
-        velocity: (0.0, 0.0),
-        sprite_index: 0,
-        facing_right: true,
-        sprite: GPUSprite {
-            screen_region: [32.0, 128.0, 64.0, 64.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-        },
-        charges: 0,
-    };
-    gso.enemy = Entity {
-        enemy: Enemy {
-            pos: (450.0, 650.0),
-            size: (64.0, 64.0),
-            speed: 6.0,
-            velocity: (0.0, 0.0),
-            sprite_index: 0,
-            sprite_index_eyes: 0,
-            frame: 0.0,
-            sprite: GPUSprite {
-                screen_region: [32.0, 128.0, 64.0, 64.0],
-                sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-            },
-            sprite_eyes: GPUSprite {
-                screen_region: [32.0, 128.0, 64.0, 64.0],
-                sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-            },
-            health_bar: HealthBar {
-                currval: 10.0,
-                maxval: 10.0,
-                bar_pos: (32.0, 600.0, 128.0, 24.0),
-                units_per_pixel: 4.0,
-                sprite_border: GPUSprite {
-                    screen_region: [32.0, 32.0, 128.0, 24.0],
-                    sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
-                },
-                sprite_index_border: 0,
-                sprite_bar: GPUSprite {
-                    screen_region: [32.0, 36.0, 128.0, 16.0],
-                    sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
-                },
-                sprite_index_bar: 0,
-            },
-        },
-        ai: Box::new(enemy_ai::Level0AI {})
-    };
-    gso.player_health_bar = HealthBar {
-        currval: 10.0,
-        maxval: 10.0,
-        bar_pos: (32.0, 32.0, 128.0, 24.0),
-        units_per_pixel: 4.0,
-        sprite_border: GPUSprite {
-            screen_region: [32.0, 32.0, 128.0, 24.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
-        },
-        sprite_index_border: 0,
-        sprite_bar: GPUSprite {
-            screen_region: [32.0, 36.0, 128.0, 16.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
-        },
-        sprite_index_bar: 0,
-    };
-}
-
-fn load_level_1(gso : &mut GameStateHolder) {
-    gso.player = Player {
-            pos: (400.0, 100.0),
-            size: (64.0, 64.0),
-            speed: 6.0,
-            velocity: (0.0, 0.0),
-            sprite_index: gso.sprite_holder.get_next_index(),
-            facing_right: true,
-            sprite: GPUSprite {
-                screen_region: [32.0, 128.0, 64.0, 64.0],
-                sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 0.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-            },
-            charges: 0,
-        };
-    gso.enemy = Entity {
-            enemy: Enemy {
-                pos: (450.0, 650.0),
-                size: (64.0, 64.0),
-                speed: 6.0,
-                velocity: (0.0, 0.0),
-                sprite_index: gso.sprite_holder.get_next_index(),
-                sprite_index_eyes: gso.sprite_holder.get_next_index(),
-                frame: 0.0,
-                sprite: GPUSprite {
-                    screen_region: [32.0, 128.0, 64.0, 64.0],
-                    sheet_region: [1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-                },
-                sprite_eyes: GPUSprite {
-                    screen_region: [32.0, 128.0, 64.0, 64.0],
-                    sheet_region: [3.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1, 1.0 / SPRITE_SHEET_RESOLUTION.0, 1.0 / SPRITE_SHEET_RESOLUTION.1],
-                },
-                health_bar: HealthBar {
+    match gso.game_state.state {
+        0 => match new_state {
+            1 => {
+                gso.game_state.state = new_state;
+                gso.player = Player {
+                    pos: (400.0, 100.0),
+                    size: (64.0, 64.0),
+                    speed: 6.0,
+                    velocity: (0.0, 0.0),
+                    sprite_index: gso.sprite_holder.get_next_index(),
+                    facing_right: true,
+                    sprite: GPUSprite {
+                        screen_region: [32.0, 128.0, 64.0, 64.0],
+                        sheet_region: [
+                            0.0 / SPRITE_SHEET_RESOLUTION.0,
+                            0.0 / SPRITE_SHEET_RESOLUTION.1,
+                            1.0 / SPRITE_SHEET_RESOLUTION.0,
+                            1.0 / SPRITE_SHEET_RESOLUTION.1,
+                        ],
+                    },
+                    charges: 0,
+                };
+                gso.enemy = Entity {
+                    enemy: Enemy {
+                        pos: (450.0, 650.0),
+                        size: (64.0, 64.0),
+                        speed: 6.0,
+                        velocity: (0.0, 0.0),
+                        sprite_index: gso.sprite_holder.get_next_index(),
+                        sprite_index_eyes: gso.sprite_holder.get_next_index(),
+                        frame: 0.0,
+                        sprite: GPUSprite {
+                            screen_region: [32.0, 128.0, 64.0, 64.0],
+                            sheet_region: [
+                                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                            ],
+                        },
+                        sprite_eyes: GPUSprite {
+                            screen_region: [32.0, 128.0, 64.0, 64.0],
+                            sheet_region: [
+                                3.0 / SPRITE_SHEET_RESOLUTION.0,
+                                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                                1.0 / SPRITE_SHEET_RESOLUTION.0,
+                                1.0 / SPRITE_SHEET_RESOLUTION.1,
+                            ],
+                        },
+                        health_bar: HealthBar {
+                            currval: 10.0,
+                            maxval: 10.0,
+                            bar_pos: (32.0, 600.0, 128.0, 24.0),
+                            units_per_pixel: 4.0,
+                            sprite_border: GPUSprite {
+                                screen_region: [32.0, 32.0, 128.0, 24.0],
+                                sheet_region: [
+                                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                                    2.0 / SPRITE_SHEET_RESOLUTION.1,
+                                    2.0 / SPRITE_SHEET_RESOLUTION.0,
+                                    (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                                ],
+                            },
+                            sprite_index_border: gso.sprite_holder.get_next_index(),
+                            sprite_bar: GPUSprite {
+                                screen_region: [32.0, 36.0, 128.0, 16.0],
+                                sheet_region: [
+                                    0.0 / SPRITE_SHEET_RESOLUTION.0,
+                                    (2.0 + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1,
+                                    2.0 / SPRITE_SHEET_RESOLUTION.0,
+                                    (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                                ],
+                            },
+                            sprite_index_bar: gso.sprite_holder.get_next_index(),
+                        },
+                    },
+                    ai: Box::new(enemy_ai::Level1AI {
+                        max_cooldown: 40,
+                        cooldown: 0,
+                    }),
+                };
+                gso.player_health_bar = HealthBar {
                     currval: 10.0,
                     maxval: 10.0,
-                    bar_pos: (32.0, 600.0, 128.0, 24.0),
+                    bar_pos: (32.0, 32.0, 128.0, 24.0),
                     units_per_pixel: 4.0,
                     sprite_border: GPUSprite {
                         screen_region: [32.0, 32.0, 128.0, 24.0],
-                        sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                        sheet_region: [
+                            0.0 / SPRITE_SHEET_RESOLUTION.0,
+                            2.0 / SPRITE_SHEET_RESOLUTION.1,
+                            2.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                        ],
                     },
                     sprite_index_border: gso.sprite_holder.get_next_index(),
                     sprite_bar: GPUSprite {
                         screen_region: [32.0, 36.0, 128.0, 16.0],
-                        sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (12.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                        sheet_region: [
+                            0.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (2.0 + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1,
+                            2.0 / SPRITE_SHEET_RESOLUTION.0,
+                            (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1,
+                        ],
                     },
                     sprite_index_bar: gso.sprite_holder.get_next_index(),
-                },
-            },
-            ai: Box::new(enemy_ai::Level1AI {
-                max_cooldown: 40,
-                cooldown: 0,
-            }),
-        };
-    gso.player_health_bar = HealthBar {
-        currval: 10.0,
-        maxval: 10.0,
-        bar_pos: (32.0, 32.0, 128.0, 24.0),
-        units_per_pixel: 4.0,
-        sprite_border: GPUSprite {
-            screen_region: [32.0, 32.0, 128.0, 24.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, 2.0 / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (6.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
+                }
+            }
+            _ => {
+                println!(
+                    "Cannot transition from state {} to state {}",
+                    gso.game_state.state, new_state
+                );
+            }
         },
-        sprite_index_border: gso.sprite_holder.get_next_index(),
-        sprite_bar: GPUSprite {
-            screen_region: [32.0, 36.0, 128.0, 16.0],
-            sheet_region: [0.0 / SPRITE_SHEET_RESOLUTION.0, (2.0  + (7.0 / 16.0)) / SPRITE_SHEET_RESOLUTION.1, 2.0 / SPRITE_SHEET_RESOLUTION.0, (4.0 / 16.0) / SPRITE_SHEET_RESOLUTION.1],
-        },
-        sprite_index_bar: gso.sprite_holder.get_next_index(),
+        _ => {
+            println!("Cannot transition from state {}", gso.game_state.state);
+        }
     }
 }
