@@ -299,6 +299,8 @@ impl Player {
     }
 }
 
+// Speed would matter if the enemy were able to move, but it doesn't in our current levels.
+#[allow(dead_code)]
 pub struct Enemy {
     pos: (f32, f32),
     size: (f32, f32),
